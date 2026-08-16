@@ -189,6 +189,73 @@ func TestCreateAndDeletePart(t *testing.T) {
 	// Part deletion happens in defer
 }
 
+// TestPartTags covers the `tags` field on create and update, including the two
+// InvenTree quirks the README documents: tags are absent from a GET response,
+// and they are only discoverable through the full-text search.
+func TestPartTags(t *testing.T) {
+	_, c := setupServer(t)
+
+	var created tools.Part
+	err := c.Post("/api/part/", map[string]any{
+		"name":        "_MCP_TEST_TAGS_DELETE_ME",
+		"description": "Integration test part for tags - safe to delete",
+		"component":   true,
+		"tags":        []string{"mcptesttag"},
+	}, &created)
+	if err != nil {
+		t.Fatalf("create part with tags: %v", err)
+	}
+	t.Logf("Created part: [%d] %s tags=%v", created.PK, created.Name, created.Tags)
+
+	defer func() {
+		_ = c.Patch(fmt.Sprintf("/api/part/%d/", created.PK), map[string]any{"active": false}, nil)
+		if err := c.Delete(fmt.Sprintf("/api/part/%d/", created.PK)); err != nil {
+			t.Errorf("cleanup - delete part: %v", err)
+		}
+	}()
+
+	// The POST response carries the tags back...
+	if len(created.Tags) != 1 || created.Tags[0] != "mcptesttag" {
+		t.Fatalf("expected tags [mcptesttag] in create response, got %v", created.Tags)
+	}
+
+	// ...but a GET does not return the field at all.
+	var fetched tools.Part
+	if err := c.Get(fmt.Sprintf("/api/part/%d/?format=json", created.PK), &fetched); err != nil {
+		t.Fatalf("get part: %v", err)
+	}
+	if len(fetched.Tags) != 0 {
+		t.Logf("note: GET returned tags=%v - InvenTree may have started serialising them, "+
+			"the README caveat can be relaxed", fetched.Tags)
+	}
+
+	// Tags are reachable through the full-text search.
+	var searchResp client.PaginatedResponse[tools.Part]
+	if err := c.Get("/api/part/?search=mcptesttag&limit=25&format=json", &searchResp); err != nil {
+		t.Fatalf("search by tag: %v", err)
+	}
+	found := false
+	for _, p := range searchResp.Results {
+		if p.PK == created.PK {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("part [%d] not found when searching for its tag", created.PK)
+	}
+
+	// An update replaces the tag list rather than appending to it.
+	var updated tools.Part
+	err = c.Patch(fmt.Sprintf("/api/part/%d/", created.PK),
+		map[string]any{"tags": []string{"mcpothertag"}}, &updated)
+	if err != nil {
+		t.Fatalf("update tags: %v", err)
+	}
+	if len(updated.Tags) != 1 || updated.Tags[0] != "mcpothertag" {
+		t.Errorf("expected tags to be replaced by [mcpothertag], got %v", updated.Tags)
+	}
+}
+
 // TestCreateAndDeleteLocation tests location lifecycle.
 func TestCreateAndDeleteLocation(t *testing.T) {
 	_, c := setupServer(t)
@@ -260,4 +327,3 @@ func TestCreateAndDeleteCategory(t *testing.T) {
 	}
 	t.Logf("Found test category via search: %s", searchResp.Results[0].PathString)
 }
-

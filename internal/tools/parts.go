@@ -89,19 +89,20 @@ func RegisterGetPart(server *mcp.Server, c *client.Client, r *coerce.Registry) {
 // -- Create Part --
 
 type CreatePartInput struct {
-	Name         string `json:"name" jsonschema:"Part name (required)"`
-	Description  string `json:"description,omitempty" jsonschema:"Part description"`
-	Category     int    `json:"category,omitempty" jsonschema:"Category ID for the part. 0 or omit for uncategorized."`
-	IPN          string `json:"IPN,omitempty" jsonschema:"Internal Part Number"`
-	Keywords     string `json:"keywords,omitempty" jsonschema:"Keywords for search"`
-	Units        string `json:"units,omitempty" jsonschema:"Units of measure"`
-	MinimumStock int    `json:"minimum_stock,omitempty" jsonschema:"Minimum stock level"`
-	Purchaseable *bool  `json:"purchaseable,omitempty" jsonschema:"Whether the part can be purchased (default true)"`
-	Component    *bool  `json:"component,omitempty" jsonschema:"Whether the part is a component (default true)"`
-	Assembly     *bool  `json:"assembly,omitempty" jsonschema:"Whether the part is an assembly"`
-	Trackable    *bool  `json:"trackable,omitempty" jsonschema:"Whether the part is trackable by serial number"`
-	Virtual      *bool  `json:"virtual,omitempty" jsonschema:"Whether the part is virtual (not physical)"`
-	ImageURL     string `json:"image_url,omitempty" jsonschema:"URL of an image to attach to the part. InvenTree downloads it server-side."`
+	Name         string   `json:"name" jsonschema:"Part name (required)"`
+	Description  string   `json:"description,omitempty" jsonschema:"Part description"`
+	Category     int      `json:"category,omitempty" jsonschema:"Category ID for the part. 0 or omit for uncategorized."`
+	IPN          string   `json:"IPN,omitempty" jsonschema:"Internal Part Number"`
+	Keywords     string   `json:"keywords,omitempty" jsonschema:"Keywords for search"`
+	Units        string   `json:"units,omitempty" jsonschema:"Units of measure"`
+	MinimumStock int      `json:"minimum_stock,omitempty" jsonschema:"Minimum stock level"`
+	Purchaseable *bool    `json:"purchaseable,omitempty" jsonschema:"Whether the part can be purchased (default true)"`
+	Component    *bool    `json:"component,omitempty" jsonschema:"Whether the part is a component (default true)"`
+	Assembly     *bool    `json:"assembly,omitempty" jsonschema:"Whether the part is an assembly"`
+	Trackable    *bool    `json:"trackable,omitempty" jsonschema:"Whether the part is trackable by serial number"`
+	Virtual      *bool    `json:"virtual,omitempty" jsonschema:"Whether the part is virtual (not physical)"`
+	ImageURL     string   `json:"image_url,omitempty" jsonschema:"URL of an image to attach to the part. InvenTree downloads it server-side."`
+	Tags         []string `json:"tags,omitempty" jsonschema:"Tags to attach to the part, e.g. [\"recommended\"]. Tags are covered by the part search (search_parts), but are not returned by get_part/list_parts - see README."`
 }
 
 func RegisterCreatePart(server *mcp.Server, c *client.Client, r *coerce.Registry) {
@@ -151,6 +152,9 @@ func RegisterCreatePart(server *mcp.Server, c *client.Client, r *coerce.Registry
 		if input.ImageURL != "" {
 			payload["remote_image"] = input.ImageURL
 		}
+		if len(input.Tags) > 0 {
+			payload["tags"] = input.Tags
+		}
 
 		var created Part
 		if err := c.Post("/api/part/", payload, &created); err != nil {
@@ -163,22 +167,23 @@ func RegisterCreatePart(server *mcp.Server, c *client.Client, r *coerce.Registry
 // -- Update Part --
 
 type UpdatePartInput struct {
-	ID           int    `json:"id" jsonschema:"The part ID (pk) to update"`
-	Name         string `json:"name,omitempty" jsonschema:"New part name"`
-	Description  string `json:"description,omitempty" jsonschema:"New description"`
-	Category     int    `json:"category,omitempty" jsonschema:"New category ID. 0 or omit to leave unchanged."`
-	Active       *bool  `json:"active,omitempty" jsonschema:"Whether the part is active"`
-	IPN          string `json:"IPN,omitempty" jsonschema:"New Internal Part Number"`
-	Keywords     string `json:"keywords,omitempty" jsonschema:"New keywords"`
-	Units        string `json:"units,omitempty" jsonschema:"New units of measure"`
-	MinimumStock int    `json:"minimum_stock,omitempty" jsonschema:"New minimum stock level. 0 or omit to leave unchanged."`
-	ImageURL     string `json:"image_url,omitempty" jsonschema:"URL of an image to set for this part. InvenTree downloads it server-side."`
+	ID           int       `json:"id" jsonschema:"The part ID (pk) to update"`
+	Name         string    `json:"name,omitempty" jsonschema:"New part name"`
+	Description  string    `json:"description,omitempty" jsonschema:"New description"`
+	Category     int       `json:"category,omitempty" jsonschema:"New category ID. 0 or omit to leave unchanged."`
+	Active       *bool     `json:"active,omitempty" jsonschema:"Whether the part is active"`
+	IPN          string    `json:"IPN,omitempty" jsonschema:"New Internal Part Number"`
+	Keywords     string    `json:"keywords,omitempty" jsonschema:"New keywords"`
+	Units        string    `json:"units,omitempty" jsonschema:"New units of measure"`
+	MinimumStock int       `json:"minimum_stock,omitempty" jsonschema:"New minimum stock level. 0 or omit to leave unchanged."`
+	ImageURL     string    `json:"image_url,omitempty" jsonschema:"URL of an image to set for this part. InvenTree downloads it server-side."`
+	Tags         *[]string `json:"tags,omitempty" jsonschema:"Replacement list of tags for the part, e.g. [\"discouraged\"]. This REPLACES the existing tags rather than adding to them; pass an empty list to clear them. Omit to leave tags unchanged."`
 }
 
 func RegisterUpdatePart(server *mcp.Server, c *client.Client, r *coerce.Registry) {
 	coerce.AddTool(server, r, &mcp.Tool{
 		Name:        "update_part",
-		Description: "Update an existing part's fields. Only provided fields are changed. Use this to rename parts, change categories, update descriptions, or deactivate parts.",
+		Description: "Update an existing part's fields. Only provided fields are changed. Use this to rename parts, change categories, update descriptions, deactivate parts, or set tags. Note that 'tags' replaces the whole tag list rather than appending to it.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input UpdatePartInput) (*mcp.CallToolResult, any, error) {
 		payload := map[string]any{}
 		if input.Name != "" {
@@ -207,6 +212,9 @@ func RegisterUpdatePart(server *mcp.Server, c *client.Client, r *coerce.Registry
 		}
 		if input.ImageURL != "" {
 			payload["remote_image"] = input.ImageURL
+		}
+		if input.Tags != nil {
+			payload["tags"] = *input.Tags
 		}
 
 		if len(payload) == 0 {

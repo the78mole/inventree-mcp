@@ -164,10 +164,32 @@ Restart Claude Desktop. You should see a hammer icon indicating MCP tools are av
 | `get_part` | Get detailed info about a specific part |
 | `list_parts` | List parts with optional category filter |
 | `create_part` | Create a new part |
-| `update_part` | Update part fields (name, description, category, etc.) |
+| `update_part` | Update part fields (name, description, category, tags, etc.) |
 | `delete_part` | Delete a part (auto-deactivates first) |
 | `set_part_image` | Attach an image to a part via URL |
 | `search_part_images` | Find product images via Google (requires API keys) |
+
+#### Part tags
+
+`create_part` and `update_part` accept a `tags` list, which maps to InvenTree's
+`tags` field (django-taggit). A typical use is marking preferred and deprecated
+alternatives in a catalogue, e.g. `["recommended"]` vs `["discouraged"]`.
+
+On `update_part`, `tags` **replaces** the whole list rather than appending to it —
+pass an empty list to clear all tags, or omit the field to leave them untouched.
+
+Two InvenTree API quirks are worth knowing:
+
+- **Tags don't come back from a GET.** They are returned in the response to a
+  `POST`/`PATCH`, but `GET /api/part/<pk>/` omits the field, so `get_part` and
+  `list_parts` always report `tags: null`.
+- **There is no tag filter.** `?tag=`, `?tags__name=`, `?tags__slug=` and
+  `?has_tags=` are silently ignored and return *every* part, which is easy to
+  mistake for "all parts carry this tag". Tags *are* covered by the full-text
+  search, so `search_parts` with the tag name is the working way to find them.
+  That search is a substring match, so pick tag names where neither is a
+  substring of the other (`recommended`/`discouraged`, not
+  `recommended`/`not-recommended`).
 
 ### Stock
 
