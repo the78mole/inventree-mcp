@@ -549,3 +549,26 @@ func jsonResult(v any) (*mcp.CallToolResult, any, error) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// countOf renders "1 stock item" / "3 stock items".
+func countOf(n int, singular, plural string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, singular)
+	}
+	return fmt.Sprintf("%d %s", n, plural)
+}
+
+// deletionSummary spells out what became of the contents of a container
+// InvenTree has just deleted. InvenTree removes the container whether or not
+// it is empty, so the contents were either deleted alongside it or moved up to
+// its parent - and the caller should not have to guess which.
+func deletionSummary(deleted, moved []string, destination string) string {
+	var s string
+	if len(deleted) > 0 {
+		s += fmt.Sprintf(" Deleted with it: %s.", strings.Join(deleted, " and "))
+	}
+	if len(moved) > 0 {
+		s += fmt.Sprintf(" Moved to %s: %s.", destination, strings.Join(moved, " and "))
+	}
+	return s
+}

@@ -188,6 +188,28 @@ func (c *Client) Delete(path string) error {
 	return decodeResponse(resp, nil)
 }
 
+// DeleteWithBody performs a DELETE request with a JSON body.
+//
+// A few InvenTree endpoints put required fields on the delete serializer and
+// reject a body-less DELETE with a 400: stock locations want
+// delete_stock_items and delete_sub_locations, part categories want
+// delete_parts and delete_child_categories. Everything else deletes fine with
+// plain Delete.
+func (c *Client) DeleteWithBody(path string, payload any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshaling request body: %w", err)
+	}
+
+	resp, err := c.Do(http.MethodDelete, path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	return decodeResponse(resp, nil)
+}
+
 // decodeResponse reads the full response body and handles errors uniformly.
 // If dest is nil the body is consumed but not decoded.
 func decodeResponse(resp *http.Response, dest any) error {
