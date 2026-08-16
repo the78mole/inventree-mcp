@@ -4,7 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime"
+	"net/http"
 	"net/url"
+	"path"
+	"strings"
 
 	"github.com/chrisbotelho/inventree-mcp/internal/client"
 	"github.com/chrisbotelho/inventree-mcp/internal/coerce"
@@ -101,7 +106,8 @@ type CreatePartInput struct {
 	Assembly     *bool    `json:"assembly,omitempty" jsonschema:"Whether the part is an assembly"`
 	Trackable    *bool    `json:"trackable,omitempty" jsonschema:"Whether the part is trackable by serial number"`
 	Virtual      *bool    `json:"virtual,omitempty" jsonschema:"Whether the part is virtual (not physical)"`
-	ImageURL     string   `json:"image_url,omitempty" jsonschema:"URL of an image to attach to the part. InvenTree downloads it server-side."`
+	Link         string   `json:"link,omitempty" jsonschema:"External URL for this part, e.g. its product page or datasheet"`
+	ImageURL     string   `json:"image_url,omitempty" jsonschema:"URL of an image to attach to the part. InvenTree downloads it server-side, which fails silently on instances without outbound internet access - use upload_part_image if that happens."`
 	Tags         []string `json:"tags,omitempty" jsonschema:"Tags to attach to the part, e.g. [\"recommended\"]. Tags are covered by the part search (search_parts), but are not returned by get_part/list_parts - see README."`
 }
 
@@ -149,6 +155,9 @@ func RegisterCreatePart(server *mcp.Server, c *client.Client, r *coerce.Registry
 		if input.Virtual != nil {
 			payload["virtual"] = *input.Virtual
 		}
+		if input.Link != "" {
+			payload["link"] = input.Link
+		}
 		if input.ImageURL != "" {
 			payload["remote_image"] = input.ImageURL
 		}
@@ -159,6 +168,11 @@ func RegisterCreatePart(server *mcp.Server, c *client.Client, r *coerce.Registry
 		var created Part
 		if err := c.Post("/api/part/", payload, &created); err != nil {
 			return errResult(fmt.Errorf("creating part: %w", err)), nil, nil
+		}
+		// The part itself was created, so this is a warning rather than an
+		// error - but it must not pass silently, see remoteImageWarning.
+		if warning := remoteImageWarning(input.ImageURL, created.Image, created.PK); warning != "" {
+			return jsonResult(map[string]any{"part": created, "image_warning": warning})
 		}
 		return jsonResult(created)
 	})
@@ -176,7 +190,8 @@ type UpdatePartInput struct {
 	Keywords     string    `json:"keywords,omitempty" jsonschema:"New keywords"`
 	Units        string    `json:"units,omitempty" jsonschema:"New units of measure"`
 	MinimumStock int       `json:"minimum_stock,omitempty" jsonschema:"New minimum stock level. 0 or omit to leave unchanged."`
-	ImageURL     string    `json:"image_url,omitempty" jsonschema:"URL of an image to set for this part. InvenTree downloads it server-side."`
+	Link         string    `json:"link,omitempty" jsonschema:"New external URL for this part, e.g. its product page or datasheet"`
+	ImageURL     string    `json:"image_url,omitempty" jsonschema:"URL of an image to set for this part. InvenTree downloads it server-side, which fails silently on instances without outbound internet access - use upload_part_image if that happens."`
 	Tags         *[]string `json:"tags,omitempty" jsonschema:"Replacement list of tags for the part, e.g. [\"discouraged\"]. This REPLACES the existing tags rather than adding to them; pass an empty list to clear them. Omit to leave tags unchanged."`
 }
 
@@ -210,6 +225,9 @@ func RegisterUpdatePart(server *mcp.Server, c *client.Client, r *coerce.Registry
 		if input.MinimumStock != 0 {
 			payload["minimum_stock"] = input.MinimumStock
 		}
+		if input.Link != "" {
+			payload["link"] = input.Link
+		}
 		if input.ImageURL != "" {
 			payload["remote_image"] = input.ImageURL
 		}
@@ -226,8 +244,30 @@ func RegisterUpdatePart(server *mcp.Server, c *client.Client, r *coerce.Registry
 		if err := c.Patch(path, payload, &updated); err != nil {
 			return errResult(fmt.Errorf("updating part %d: %w", input.ID, err)), nil, nil
 		}
+		if warning := remoteImageWarning(input.ImageURL, updated.Image, updated.PK); warning != "" {
+			return jsonResult(map[string]any{"part": updated, "image_warning": warning})
+		}
 		return jsonResult(updated)
 	})
+}
+
+// remoteImageWarning reports the silent no-op InvenTree performs when it is
+// asked to fetch a `remote_image` URL it cannot reach: the request succeeds
+// with HTTP 200 and `image: null`, with no error field anywhere. That happens
+// on any instance with restricted egress, or with the INVENTREE_DOWNLOAD_FROM_URL
+// setting disabled. Returns "" when no image was requested or one did arrive.
+func remoteImageWarning(requestedURL string, image *string, partPK int) string {
+	if requestedURL == "" {
+		return ""
+	}
+	if image != nil && *image != "" {
+		return ""
+	}
+	return fmt.Sprintf(
+		"InvenTree accepted the request but did not store an image: the server could not fetch %q itself "+
+			"(restricted outbound access, or INVENTREE_DOWNLOAD_FROM_URL disabled). It reports success either way. "+
+			"Use upload_part_image with id=%d and the same URL - that fetches the file here and uploads the bytes.",
+		requestedURL, partPK)
 }
 
 // -- Delete Part --
@@ -298,8 +338,10 @@ type SetPartImageInput struct {
 
 func RegisterSetPartImage(server *mcp.Server, c *client.Client, r *coerce.Registry) {
 	coerce.AddTool(server, r, &mcp.Tool{
-		Name:        "set_part_image",
-		Description: "Set or replace the image for an existing part by providing an image URL. InvenTree downloads the image from the URL server-side. Use this after search_part_images to attach a product photo to a part.",
+		Name: "set_part_image",
+		Description: "Set or replace a part's image by URL, fetched by the InvenTree server itself. Use this after search_part_images. " +
+			"If the InvenTree host has no outbound internet access the fetch quietly does nothing - this tool detects that and reports it as an error, " +
+			"so use upload_part_image instead on such instances.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input SetPartImageInput) (*mcp.CallToolResult, any, error) {
 		if input.ImageURL == "" {
 			return errResult(fmt.Errorf("image_url is required")), nil, nil
@@ -312,8 +354,134 @@ func RegisterSetPartImage(server *mcp.Server, c *client.Client, r *coerce.Regist
 		if err := c.Patch(path, payload, &updated); err != nil {
 			return errResult(fmt.Errorf("setting image for part %d: %w", input.ID, err)), nil, nil
 		}
+		// Unlike create_part/update_part, attaching the image is this tool's
+		// only job - a no-op here is a failure, not a warning.
+		if warning := remoteImageWarning(input.ImageURL, updated.Image, updated.PK); warning != "" {
+			return errResult(fmt.Errorf("%s", warning)), nil, nil
+		}
 		return jsonResult(updated)
 	})
+}
+
+// -- Upload Part Image --
+
+type UploadPartImageInput struct {
+	ID       int    `json:"id" jsonschema:"The part ID (pk) to set the image for"`
+	ImageURL string `json:"image_url" jsonschema:"URL of the image. Fetched by this MCP server and uploaded to InvenTree as multipart/form-data, bypassing InvenTree's own server-side fetch."`
+}
+
+func RegisterUploadPartImage(server *mcp.Server, c *client.Client, r *coerce.Registry) {
+	coerce.AddTool(server, r, &mcp.Tool{
+		Name: "upload_part_image",
+		Description: "Set a part's image by downloading it here and uploading the bytes to InvenTree. " +
+			"Use this when set_part_image reports that the InvenTree server could not fetch the URL itself - " +
+			"this MCP server usually has outbound internet access even when the InvenTree host does not.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input UploadPartImageInput) (*mcp.CallToolResult, any, error) {
+		if input.ImageURL == "" {
+			return errResult(fmt.Errorf("image_url is required")), nil, nil
+		}
+
+		content, contentType, err := fetchImage(ctx, input.ImageURL)
+		if err != nil {
+			return errResult(err), nil, nil
+		}
+
+		var updated Part
+		path := fmt.Sprintf("/api/part/%d/", input.ID)
+		file := client.MultipartFile{
+			FieldName:   "image",
+			FileName:    imageFileName(input.ImageURL, contentType),
+			Content:     content,
+			ContentType: contentType,
+		}
+		if err := c.PatchMultipart(path, nil, []client.MultipartFile{file}, &updated); err != nil {
+			return errResult(fmt.Errorf("uploading image for part %d: %w", input.ID, err)), nil, nil
+		}
+		if updated.Image == nil || *updated.Image == "" {
+			return errResult(fmt.Errorf("upload for part %d was accepted but the part still has no image", input.ID)), nil, nil
+		}
+		return jsonResult(updated)
+	})
+}
+
+// maxImageBytes caps what will be pulled into memory for an upload. Part
+// images are product photos; anything past this is a wrong URL.
+const maxImageBytes = 25 << 20 // 25 MiB
+
+func fetchImage(ctx context.Context, rawURL string) ([]byte, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("building request for %q: %w", rawURL, err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("fetching %q: %w", rawURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", fmt.Errorf("fetching %q: HTTP %d", rawURL, resp.StatusCode)
+	}
+
+	content, err := io.ReadAll(io.LimitReader(resp.Body, maxImageBytes+1))
+	if err != nil {
+		return nil, "", fmt.Errorf("reading %q: %w", rawURL, err)
+	}
+	if len(content) == 0 {
+		return nil, "", fmt.Errorf("fetching %q: empty response body", rawURL)
+	}
+	if len(content) > maxImageBytes {
+		return nil, "", fmt.Errorf("fetching %q: image exceeds the %d MiB limit", rawURL, maxImageBytes>>20)
+	}
+
+	// Trust what the bytes actually are over what the server claims, since
+	// the file name and the multipart part header are both derived from it.
+	contentType := http.DetectContentType(content)
+	if !strings.HasPrefix(contentType, "image/") {
+		return nil, "", fmt.Errorf("fetching %q: content is %s, not an image", rawURL, contentType)
+	}
+	return content, contentType, nil
+}
+
+// imageExtensions pins the extension for the common image types rather than
+// taking mime.ExtensionsByType's first entry, which is alphabetical and
+// depends on the host's mime database - it yields ".jfif" for image/jpeg on
+// a stock Debian, which is valid but surprising in a file listing.
+var imageExtensions = map[string]string{
+	"image/jpeg":    ".jpg",
+	"image/png":     ".png",
+	"image/gif":     ".gif",
+	"image/webp":    ".webp",
+	"image/svg+xml": ".svg",
+	"image/bmp":     ".bmp",
+	"image/tiff":    ".tiff",
+}
+
+// imageFileName derives an upload file name from the URL, falling back to the
+// detected content type. InvenTree stores files under its own generated name,
+// so this only needs a sane extension.
+func imageFileName(rawURL, contentType string) string {
+	name := "image"
+	if u, err := url.Parse(rawURL); err == nil {
+		if base := path.Base(u.Path); base != "" && base != "." && base != "/" {
+			name = base
+		}
+	}
+	if path.Ext(name) != "" {
+		return name
+	}
+	// Content types can carry parameters, e.g. "image/jpeg; charset=binary".
+	mediaType := contentType
+	if parsed, _, err := mime.ParseMediaType(contentType); err == nil {
+		mediaType = parsed
+	}
+	if ext, ok := imageExtensions[mediaType]; ok {
+		return name + ext
+	}
+	if exts, err := mime.ExtensionsByType(mediaType); err == nil && len(exts) > 0 {
+		return name + exts[0]
+	}
+	return name + ".img"
 }
 
 // -- Search Part Images --
