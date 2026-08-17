@@ -34,6 +34,7 @@ type SupplierPart struct {
 	MPN                 *string  `json:"MPN"`
 	Link                *string  `json:"link"`
 	Note                *string  `json:"note"`
+	Notes               *string  `json:"notes"`
 	Description         *string  `json:"description"`
 	Available           float64  `json:"available"`
 	AvailabilityUpdated *string  `json:"availability_updated"`
@@ -161,7 +162,8 @@ type CreateSupplierPartInput struct {
 	SKU              string  `json:"SKU" jsonschema:"The supplier's own article number for this part (required)"`
 	ManufacturerPart int     `json:"manufacturer_part,omitempty" jsonschema:"Manufacturer part ID to link. The MPN shown on the supplier part is derived from this - MPN itself is read-only in the InvenTree API."`
 	Link             string  `json:"link,omitempty" jsonschema:"URL of the supplier's product page"`
-	Note             string  `json:"note,omitempty" jsonschema:"Free-text note, e.g. an availability status that is not a quantity"`
+	Note             string  `json:"note,omitempty" jsonschema:"Free-text note, e.g. an availability status that is not a quantity. Limited to 100 characters by InvenTree; use 'notes' for anything longer."`
+	Notes            string  `json:"notes,omitempty" jsonschema:"Long-form notes, not length-limited (unlike 'note')"`
 	Packaging        string  `json:"packaging,omitempty" jsonschema:"Packaging unit, e.g. 'Ring 100m'"`
 	Available        float64 `json:"available,omitempty" jsonschema:"Quantity available at the supplier. Leave unset unless you have a real number."`
 }
@@ -190,6 +192,9 @@ func RegisterCreateSupplierPart(server *mcp.Server, c *client.Client, r *coerce.
 		if input.Note != "" {
 			payload["note"] = input.Note
 		}
+		if input.Notes != "" {
+			payload["notes"] = input.Notes
+		}
 		if input.Packaging != "" {
 			payload["packaging"] = input.Packaging
 		}
@@ -212,7 +217,8 @@ type UpdateSupplierPartInput struct {
 	SKU              string   `json:"SKU,omitempty" jsonschema:"New supplier article number"`
 	ManufacturerPart int      `json:"manufacturer_part,omitempty" jsonschema:"Manufacturer part ID to link. The MPN shown on the supplier part is derived from this - MPN itself is read-only in the InvenTree API."`
 	Link             string   `json:"link,omitempty" jsonschema:"New supplier product page URL"`
-	Note             string   `json:"note,omitempty" jsonschema:"New free-text note"`
+	Note             string   `json:"note,omitempty" jsonschema:"New free-text note. Limited to 100 characters by InvenTree; use 'notes' for anything longer."`
+	Notes            string   `json:"notes,omitempty" jsonschema:"New long-form notes, not length-limited (unlike 'note')"`
 	Packaging        string   `json:"packaging,omitempty" jsonschema:"New packaging unit"`
 	Available        *float64 `json:"available,omitempty" jsonschema:"New available quantity. Writing this makes InvenTree stamp availability_updated."`
 	Active           *bool    `json:"active,omitempty" jsonschema:"Whether this supplier link is active"`
@@ -236,6 +242,9 @@ func RegisterUpdateSupplierPart(server *mcp.Server, c *client.Client, r *coerce.
 		}
 		if input.Note != "" {
 			payload["note"] = input.Note
+		}
+		if input.Notes != "" {
+			payload["notes"] = input.Notes
 		}
 		if input.Packaging != "" {
 			payload["packaging"] = input.Packaging
