@@ -148,11 +148,14 @@ func listSupplierParts(c *client.Client, partID, supplierID, limit int) ([]Suppl
 }
 
 // availableWarning is repeated in both tool descriptions that write the
-// field, because inventing a quantity from a supplier's in-stock flag is an
-// easy and silently wrong thing for a caller to do.
-const availableWarning = "IMPORTANT about 'available': it is a plain quantity. Many distributor APIs (FEGA & Schmitt's among them) " +
-	"only expose an in-stock/out-of-stock flag and never a number, even when queried at 10,000 units. " +
-	"Do not turn a status flag into a made-up quantity - leave available unset and put the status in note instead."
+// field, because inventing a quantity where the supplier only gives a status
+// flag is an easy and silently wrong thing for a caller to do.
+const availableWarning = "IMPORTANT about 'available': it is a plain quantity, and writing it makes InvenTree stamp " +
+	"availability_updated. Only write a number the supplier actually reports. Some distributor APIs expose no " +
+	"quantity at all, only an in-stock/out-of-stock flag - in that case leave available unset and put the status " +
+	"in note instead, rather than turning a flag into a made-up number. Check the field semantics before trusting " +
+	"a value: a field named after something else may carry the quantity (FEGA & Schmitt's price/availability " +
+	"service reports it in a field called warehouse_number, while warehouse_name stays constant)."
 
 // -- Create Supplier Part --
 
