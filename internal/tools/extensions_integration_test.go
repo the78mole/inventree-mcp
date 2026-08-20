@@ -290,6 +290,159 @@ func TestSupplierPartRoundTrip(t *testing.T) {
 	}
 }
 
+// -- Manufacturers --
+
+// TestManufacturerPartRoundTrip covers the create/list/update/delete cycle of
+// a manufacturer part, which is what a supplier part needs before it can
+// report an MPN of its own.
+func TestManufacturerPartRoundTrip(t *testing.T) {
+	ctx, cs, c := connectSession(t)
+	part := createTestPart(t, c, "_MCP_TEST_MANUFACTURER_DELETE_ME")
+
+	// Any manufacturer company will do; skip if the instance has none.
+	var companies struct {
+		Count   int             `json:"count"`
+		Results []tools.Company `json:"results"`
+	}
+	decodeInto(t, callTool(t, ctx, cs, "search_companies", map[string]any{
+		"is_manufacturer": true,
+		"limit":           1,
+	}), &companies)
+	if companies.Count == 0 {
+		t.Skip("no manufacturer companies on this instance")
+	}
+	manufacturer := companies.Results[0]
+
+	var created tools.ManufacturerPart
+	decodeInto(t, callTool(t, ctx, cs, "create_manufacturer_part", map[string]any{
+		"part":         part.PK,
+		"manufacturer": manufacturer.PK,
+		"MPN":          "_MCP_TEST_MPN",
+		"link":         "https://example.com/_mcp_test",
+	}), &created)
+
+	t.Cleanup(func() {
+		if err := c.Delete(fmt.Sprintf("/api/company/part/manufacturer/%d/", created.PK)); err != nil {
+			t.Errorf("cleanup - delete manufacturer part %d: %v", created.PK, err)
+		}
+	})
+
+	if created.MPN == nil || *created.MPN != "_MCP_TEST_MPN" {
+		t.Errorf("expected MPN to round-trip, got %v", created.MPN)
+	}
+
+	var found struct {
+		Count   int                      `json:"count"`
+		Results []tools.ManufacturerPart `json:"results"`
+	}
+	decodeInto(t, callTool(t, ctx, cs, "get_manufacturer_parts", map[string]any{"part": part.PK}), &found)
+	if found.Count != 1 || found.Results[0].PK != created.PK {
+		t.Errorf("expected to find manufacturer part %d for part %d, got %+v", created.PK, part.PK, found.Results)
+	}
+
+	var updated tools.ManufacturerPart
+	decodeInto(t, callTool(t, ctx, cs, "update_manufacturer_part", map[string]any{
+		"id":          created.PK,
+		"description": "_MCP_TEST_DESCRIPTION",
+	}), &updated)
+	if updated.Description == nil || *updated.Description != "_MCP_TEST_DESCRIPTION" {
+		t.Errorf("expected description to be set, got %v", updated.Description)
+	}
+}
+
+func TestGetManufacturerPartsRequiresAFilter(t *testing.T) {
+	ctx, cs, _ := connectSession(t)
+	msg := callToolExpectingError(t, ctx, cs, "get_manufacturer_parts", map[string]any{})
+	if !strings.Contains(msg, "part") && !strings.Contains(msg, "manufacturer") {
+		t.Errorf("expected the error to name the required filters, got: %s", msg)
+	}
+}
+
+// A part that is not purchaseable is reported by InvenTree as a part that does
+// not exist. The tool has to say what is actually wrong.
+func TestCreateManufacturerPartOnNonPurchaseablePart(t *testing.T) {
+	ctx, cs, c := connectSession(t)
+	part := createTestPart(t, c, "_MCP_TEST_NOT_PURCHASEABLE_DELETE_ME")
+	callTool(t, ctx, cs, "update_part", map[string]any{"id": part.PK, "purchaseable": false})
+
+	var companies struct {
+		Count   int             `json:"count"`
+		Results []tools.Company `json:"results"`
+	}
+	decodeInto(t, callTool(t, ctx, cs, "search_companies", map[string]any{
+		"is_manufacturer": true,
+		"limit":           1,
+	}), &companies)
+	if companies.Count == 0 {
+		t.Skip("no manufacturer companies on this instance")
+	}
+
+	msg := callToolExpectingError(t, ctx, cs, "create_manufacturer_part", map[string]any{
+		"part":         part.PK,
+		"manufacturer": companies.Results[0].PK,
+		"MPN":          "_MCP_TEST_MPN",
+	})
+	if !strings.Contains(msg, "purchaseable") {
+		t.Errorf("expected the error to explain the purchaseable filter, got: %s", msg)
+	}
+}
+
+// -- Sale pricing --
+
+// TestSetSalePriceBreakUpsert covers both branches of set_sale_price_break.
+// InvenTree enforces one tier per (part, quantity), so the update branch is
+// not an optimisation - a second create at the same quantity would fail.
+func TestSetSalePriceBreakUpsert(t *testing.T) {
+	ctx, cs, c := connectSession(t)
+	part := createTestPart(t, c, "_MCP_TEST_SALE_PRICE_DELETE_ME")
+	// salable is the flag /api/part/sale-price/ filters its queryset on.
+	callTool(t, ctx, cs, "update_part", map[string]any{"id": part.PK, "salable": true})
+
+	var pb1 tools.SalePriceBreak
+	decodeInto(t, callTool(t, ctx, cs, "set_sale_price_break", map[string]any{
+		"part":     part.PK,
+		"quantity": 1,
+		"price":    24.90,
+	}), &pb1)
+	if pb1.PK == 0 {
+		t.Fatal("expected a sale price break to have been created")
+	}
+
+	var pb2 tools.SalePriceBreak
+	decodeInto(t, callTool(t, ctx, cs, "set_sale_price_break", map[string]any{
+		"part":     part.PK,
+		"quantity": 1,
+		"price":    19.90,
+	}), &pb2)
+	if pb2.PK != pb1.PK {
+		t.Errorf("expected sale price break %d to be updated in place, got a new one (%d)", pb1.PK, pb2.PK)
+	}
+
+	var breaks struct {
+		Count int `json:"count"`
+	}
+	decodeInto(t, callTool(t, ctx, cs, "get_sale_price_breaks", map[string]any{"part": part.PK}), &breaks)
+	if breaks.Count != 1 {
+		t.Errorf("expected exactly 1 sale price break after two calls at the same quantity, got %d", breaks.Count)
+	}
+}
+
+// The mirror image of the manufacturer part case: a part that is not salable
+// is reported as a part that does not exist.
+func TestSetSalePriceBreakOnNonSalablePart(t *testing.T) {
+	ctx, cs, c := connectSession(t)
+	part := createTestPart(t, c, "_MCP_TEST_NOT_SALABLE_DELETE_ME")
+
+	msg := callToolExpectingError(t, ctx, cs, "set_sale_price_break", map[string]any{
+		"part":     part.PK,
+		"quantity": 1,
+		"price":    5,
+	})
+	if !strings.Contains(msg, "salable") {
+		t.Errorf("expected the error to explain the salable filter, got: %s", msg)
+	}
+}
+
 func TestGetSupplierPartsRequiresAFilter(t *testing.T) {
 	ctx, cs, _ := connectSession(t)
 	msg := callToolExpectingError(t, ctx, cs, "get_supplier_parts", map[string]any{})
@@ -496,6 +649,10 @@ func TestAllToolsAreRegistered(t *testing.T) {
 		"search_companies", "get_supplier_parts", "create_supplier_part",
 		"update_supplier_part", "delete_supplier_part",
 		"get_supplier_price_breaks", "set_supplier_price_break",
+		"create_company", "update_company",
+		"get_manufacturer_parts", "create_manufacturer_part",
+		"update_manufacturer_part", "delete_manufacturer_part",
+		"get_sale_price_breaks", "set_sale_price_break",
 		"get_stock_history", "upload_part_image",
 	} {
 		if !registered[name] {

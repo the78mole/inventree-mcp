@@ -46,6 +46,23 @@ type SupplierPart struct {
 	Tags                []string `json:"tags"`
 }
 
+// ManufacturerPart links a Part to the Company that makes it, under that
+// manufacturer's own part number (MPN).
+//
+// A SupplierPart points at a ManufacturerPart rather than carrying an MPN of
+// its own, so this is what has to exist first when a supplier's listing should
+// show a manufacturer part number.
+type ManufacturerPart struct {
+	PK           int      `json:"pk"`
+	Part         int      `json:"part"`
+	Manufacturer int      `json:"manufacturer"`
+	MPN          *string  `json:"MPN"`
+	Description  *string  `json:"description"`
+	Link         *string  `json:"link"`
+	Notes        *string  `json:"notes"`
+	Tags         []string `json:"tags"`
+}
+
 // SupplierPriceBreak is a quantity/price tier for one SupplierPart.
 type SupplierPriceBreak struct {
 	PK       int     `json:"pk"`
@@ -142,6 +159,9 @@ func listSupplierParts(c *client.Client, partID, supplierID, limit int) ([]Suppl
 	}
 	var resp client.PaginatedResponse[SupplierPart]
 	if err := c.Get(path, &resp); err != nil {
+		// Filtering by a part that is not purchaseable fails outright.
+		err = explainQuerysetError(err, "part", partID,
+			"supplier parts only exist for parts marked purchaseable; call update_part with purchaseable=true first")
 		return nil, fmt.Errorf("listing supplier parts: %w", err)
 	}
 	return resp.Results, nil
@@ -160,8 +180,8 @@ const availableWarning = "IMPORTANT about 'available': it is a plain quantity, a
 // -- Create Supplier Part --
 
 type CreateSupplierPartInput struct {
-	Part             int     `json:"part" jsonschema:"InvenTree part ID (required)"`
-	Supplier         int     `json:"supplier" jsonschema:"Supplier company ID (required)"`
+	Part             int     `json:"part" jsonschema:"InvenTree part ID (required). The part must be marked purchaseable."`
+	Supplier         int     `json:"supplier" jsonschema:"Supplier company ID (required). The company must have is_supplier set."`
 	SKU              string  `json:"SKU" jsonschema:"The supplier's own article number for this part (required)"`
 	ManufacturerPart int     `json:"manufacturer_part,omitempty" jsonschema:"Manufacturer part ID to link. The MPN shown on the supplier part is derived from this - MPN itself is read-only in the InvenTree API."`
 	Link             string  `json:"link,omitempty" jsonschema:"URL of the supplier's product page"`
@@ -174,7 +194,8 @@ type CreateSupplierPartInput struct {
 func RegisterCreateSupplierPart(server *mcp.Server, c *client.Client, r *coerce.Registry) {
 	coerce.AddTool(server, r, &mcp.Tool{
 		Name: "create_supplier_part",
-		Description: "Link a part to a supplier under that supplier's SKU. part, supplier and SKU are required. " +
+		Description: "Link a part to a supplier under that supplier's SKU. part, supplier and SKU are required. The part must be " +
+			"marked purchaseable and the company must have is_supplier set. " +
 			"Check with get_supplier_parts first - duplicate links are accepted and have to be cleaned up by hand. " + availableWarning,
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPtr(false)},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input CreateSupplierPartInput) (*mcp.CallToolResult, any, error) {
@@ -207,6 +228,10 @@ func RegisterCreateSupplierPart(server *mcp.Server, c *client.Client, r *coerce.
 
 		var created SupplierPart
 		if err := c.Post("/api/company/part/", payload, &created); err != nil {
+			err = explainQuerysetError(err, "part", input.Part,
+				"supplier parts can only be attached to parts marked purchaseable; call update_part with purchaseable=true first")
+			err = explainQuerysetError(err, "supplier", input.Supplier,
+				"only companies with is_supplier set can supply parts; call update_company with is_supplier=true first")
 			return errResult(fmt.Errorf("creating supplier part: %w", err)), nil, nil
 		}
 		return jsonResult(created)
@@ -378,5 +403,341 @@ func RegisterSetSupplierPriceBreak(server *mcp.Server, c *client.Client, r *coer
 			}
 		}
 		return jsonResult(result)
+	})
+}
+
+// -- Create Company --
+
+type CreateCompanyInput struct {
+	Name           string `json:"name" jsonschema:"Company name (required)"`
+	Description    string `json:"description,omitempty" jsonschema:"Short description of the company"`
+	Website        string `json:"website,omitempty" jsonschema:"Company website URL"`
+	Currency       string `json:"currency,omitempty" jsonschema:"ISO currency code this company trades in, e.g. 'EUR'. InvenTree requires it; when omitted the instance's default currency is looked up and used."`
+	Phone          string `json:"phone,omitempty" jsonschema:"Contact phone number"`
+	Email          string `json:"email,omitempty" jsonschema:"Contact email address"`
+	IsSupplier     *bool  `json:"is_supplier,omitempty" jsonschema:"Company supplies parts. Required before create_supplier_part will accept it."`
+	IsManufacturer *bool  `json:"is_manufacturer,omitempty" jsonschema:"Company manufactures parts. Required before create_manufacturer_part will accept it."`
+	IsCustomer     *bool  `json:"is_customer,omitempty" jsonschema:"Company buys parts from us"`
+	Active         *bool  `json:"active,omitempty" jsonschema:"Whether the company is active (default true)"`
+	Notes          string `json:"notes,omitempty" jsonschema:"Long-form notes"`
+}
+
+func RegisterCreateCompany(server *mcp.Server, c *client.Client, r *coerce.Registry) {
+	coerce.AddTool(server, r, &mcp.Tool{
+		Name: "create_company",
+		Description: "Create a supplier, manufacturer and/or customer. Search with search_companies first - InvenTree does not " +
+			"reject a second company with the same name. The role flags are not cosmetic: create_supplier_part only accepts a " +
+			"company with is_supplier, create_manufacturer_part only one with is_manufacturer, and a company can carry several roles at once.",
+		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPtr(false)},
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input CreateCompanyInput) (*mcp.CallToolResult, any, error) {
+		if input.Name == "" {
+			return errResult(fmt.Errorf("name is required")), nil, nil
+		}
+		currency := input.Currency
+		if currency == "" {
+			resolved, err := defaultCurrency(c)
+			if err != nil {
+				return errResult(fmt.Errorf("currency is required by InvenTree and the instance default could not be read (%w) - "+
+					"pass currency explicitly, e.g. 'EUR'", err)), nil, nil
+			}
+			currency = resolved
+		}
+
+		payload := map[string]any{
+			"name":     input.Name,
+			"currency": currency,
+		}
+		if input.Description != "" {
+			payload["description"] = input.Description
+		}
+		if input.Website != "" {
+			payload["website"] = input.Website
+		}
+		if input.Phone != "" {
+			payload["phone"] = input.Phone
+		}
+		if input.Email != "" {
+			payload["email"] = input.Email
+		}
+		if input.IsSupplier != nil {
+			payload["is_supplier"] = *input.IsSupplier
+		}
+		if input.IsManufacturer != nil {
+			payload["is_manufacturer"] = *input.IsManufacturer
+		}
+		if input.IsCustomer != nil {
+			payload["is_customer"] = *input.IsCustomer
+		}
+		if input.Active != nil {
+			payload["active"] = *input.Active
+		}
+		if input.Notes != "" {
+			payload["notes"] = input.Notes
+		}
+
+		var created Company
+		if err := c.Post("/api/company/", payload, &created); err != nil {
+			return errResult(fmt.Errorf("creating company: %w", err)), nil, nil
+		}
+		return jsonResult(created)
+	})
+}
+
+// defaultCurrency reads the instance-wide default currency, which InvenTree
+// requires on every company but does not fill in itself on the API.
+func defaultCurrency(c *client.Client) (string, error) {
+	var setting struct {
+		Value string `json:"value"`
+	}
+	if err := c.Get("/api/settings/global/INVENTREE_DEFAULT_CURRENCY/?format=json", &setting); err != nil {
+		return "", err
+	}
+	if setting.Value == "" {
+		return "", fmt.Errorf("instance reports an empty default currency")
+	}
+	return setting.Value, nil
+}
+
+// -- Update Company --
+
+type UpdateCompanyInput struct {
+	ID             int    `json:"id" jsonschema:"The company ID (pk) to update"`
+	Name           string `json:"name,omitempty" jsonschema:"New company name"`
+	Description    string `json:"description,omitempty" jsonschema:"New description"`
+	Website        string `json:"website,omitempty" jsonschema:"New website URL"`
+	Currency       string `json:"currency,omitempty" jsonschema:"New ISO currency code, e.g. 'EUR'"`
+	Phone          string `json:"phone,omitempty" jsonschema:"New contact phone number"`
+	Email          string `json:"email,omitempty" jsonschema:"New contact email address"`
+	IsSupplier     *bool  `json:"is_supplier,omitempty" jsonschema:"Whether the company supplies parts"`
+	IsManufacturer *bool  `json:"is_manufacturer,omitempty" jsonschema:"Whether the company manufactures parts"`
+	IsCustomer     *bool  `json:"is_customer,omitempty" jsonschema:"Whether the company buys parts from us"`
+	Active         *bool  `json:"active,omitempty" jsonschema:"Whether the company is active"`
+	Notes          string `json:"notes,omitempty" jsonschema:"New long-form notes"`
+}
+
+func RegisterUpdateCompany(server *mcp.Server, c *client.Client, r *coerce.Registry) {
+	coerce.AddTool(server, r, &mcp.Tool{
+		Name: "update_company",
+		Description: "Update an existing company. Only provided fields are changed. The usual reason to call this is adding a role " +
+			"flag to a company that already exists - e.g. setting is_manufacturer on a supplier that also makes its own products - " +
+			"rather than creating a second company for the second role.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input UpdateCompanyInput) (*mcp.CallToolResult, any, error) {
+		if input.ID == 0 {
+			return errResult(fmt.Errorf("id is required")), nil, nil
+		}
+		payload := map[string]any{}
+		if input.Name != "" {
+			payload["name"] = input.Name
+		}
+		if input.Description != "" {
+			payload["description"] = input.Description
+		}
+		if input.Website != "" {
+			payload["website"] = input.Website
+		}
+		if input.Currency != "" {
+			payload["currency"] = input.Currency
+		}
+		if input.Phone != "" {
+			payload["phone"] = input.Phone
+		}
+		if input.Email != "" {
+			payload["email"] = input.Email
+		}
+		if input.IsSupplier != nil {
+			payload["is_supplier"] = *input.IsSupplier
+		}
+		if input.IsManufacturer != nil {
+			payload["is_manufacturer"] = *input.IsManufacturer
+		}
+		if input.IsCustomer != nil {
+			payload["is_customer"] = *input.IsCustomer
+		}
+		if input.Active != nil {
+			payload["active"] = *input.Active
+		}
+		if input.Notes != "" {
+			payload["notes"] = input.Notes
+		}
+		if len(payload) == 0 {
+			return errResult(fmt.Errorf("no fields to update")), nil, nil
+		}
+
+		var updated Company
+		if err := c.Patch(fmt.Sprintf("/api/company/%d/", input.ID), payload, &updated); err != nil {
+			return errResult(fmt.Errorf("updating company %d: %w", input.ID, err)), nil, nil
+		}
+		return jsonResult(updated)
+	})
+}
+
+// -- Get Manufacturer Parts --
+
+type GetManufacturerPartsInput struct {
+	Part         int    `json:"part,omitempty" jsonschema:"Filter by InvenTree part ID"`
+	Manufacturer int    `json:"manufacturer,omitempty" jsonschema:"Filter by manufacturer company ID"`
+	MPN          string `json:"MPN,omitempty" jsonschema:"Filter by exact manufacturer part number"`
+	Limit        int    `json:"limit,omitempty" jsonschema:"Maximum number of results (default 50)"`
+}
+
+func RegisterGetManufacturerParts(server *mcp.Server, c *client.Client, r *coerce.Registry) {
+	coerce.AddTool(server, r, &mcp.Tool{
+		Name: "get_manufacturer_parts",
+		Description: "List manufacturer part links (part + manufacturer + MPN), filtered by part, manufacturer and/or MPN. " +
+			"At least one filter is required. Use this to find the manufacturer part ID that create_supplier_part takes - " +
+			"a supplier part's MPN is read-only and comes from the manufacturer part it links to.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input GetManufacturerPartsInput) (*mcp.CallToolResult, any, error) {
+		if input.Part == 0 && input.Manufacturer == 0 && input.MPN == "" {
+			return errResult(fmt.Errorf("at least one of part, manufacturer or MPN is required")), nil, nil
+		}
+		limit := input.Limit
+		if limit <= 0 {
+			limit = 50
+		}
+		path := fmt.Sprintf("/api/company/part/manufacturer/?limit=%d&format=json", limit)
+		if input.Part != 0 {
+			path += fmt.Sprintf("&part=%d", input.Part)
+		}
+		if input.Manufacturer != 0 {
+			path += fmt.Sprintf("&manufacturer=%d", input.Manufacturer)
+		}
+		if input.MPN != "" {
+			path += "&MPN=" + url.QueryEscape(input.MPN)
+		}
+
+		var resp client.PaginatedResponse[ManufacturerPart]
+		if err := c.Get(path, &resp); err != nil {
+			// Filtering by a part that is not purchaseable fails outright.
+			err = explainQuerysetError(err, "part", input.Part,
+				"manufacturer parts only exist for parts marked purchaseable; call update_part with purchaseable=true first")
+			return errResult(fmt.Errorf("listing manufacturer parts: %w", err)), nil, nil
+		}
+		return jsonResult(map[string]any{"count": resp.Count, "results": resp.Results})
+	})
+}
+
+// -- Create Manufacturer Part --
+
+type CreateManufacturerPartInput struct {
+	Part         int    `json:"part" jsonschema:"InvenTree part ID (required). The part must be marked purchaseable."`
+	Manufacturer int    `json:"manufacturer" jsonschema:"Manufacturer company ID (required). The company must have is_manufacturer set."`
+	MPN          string `json:"MPN,omitempty" jsonschema:"Manufacturer part number, max 100 characters"`
+	Description  string `json:"description,omitempty" jsonschema:"Manufacturer's own description of the part, max 250 characters"`
+	Link         string `json:"link,omitempty" jsonschema:"URL of the manufacturer's product page"`
+	Notes        string `json:"notes,omitempty" jsonschema:"Long-form notes"`
+}
+
+func RegisterCreateManufacturerPart(server *mcp.Server, c *client.Client, r *coerce.Registry) {
+	coerce.AddTool(server, r, &mcp.Tool{
+		Name: "create_manufacturer_part",
+		Description: "Record who manufactures a part, under that manufacturer's own part number. part and manufacturer are required. " +
+			"InvenTree allows one link per (part, manufacturer, MPN) combination, so check get_manufacturer_parts first. " +
+			"Create the manufacturer with create_company (is_manufacturer=true) if it does not exist yet.",
+		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPtr(false)},
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input CreateManufacturerPartInput) (*mcp.CallToolResult, any, error) {
+		if input.Part == 0 || input.Manufacturer == 0 {
+			return errResult(fmt.Errorf("part and manufacturer are both required")), nil, nil
+		}
+		payload := map[string]any{
+			"part":         input.Part,
+			"manufacturer": input.Manufacturer,
+		}
+		if input.MPN != "" {
+			payload["MPN"] = input.MPN
+		}
+		if input.Description != "" {
+			payload["description"] = input.Description
+		}
+		if input.Link != "" {
+			payload["link"] = input.Link
+		}
+		if input.Notes != "" {
+			payload["notes"] = input.Notes
+		}
+
+		var created ManufacturerPart
+		if err := c.Post("/api/company/part/manufacturer/", payload, &created); err != nil {
+			err = explainQuerysetError(err, "part", input.Part,
+				"manufacturer parts can only be attached to parts marked purchaseable; call update_part with purchaseable=true first")
+			err = explainQuerysetError(err, "manufacturer", input.Manufacturer,
+				"only companies with is_manufacturer set can manufacture parts; call update_company with is_manufacturer=true first")
+			return errResult(fmt.Errorf("creating manufacturer part: %w", err)), nil, nil
+		}
+		return jsonResult(created)
+	})
+}
+
+// -- Update Manufacturer Part --
+
+type UpdateManufacturerPartInput struct {
+	ID           int    `json:"id" jsonschema:"The manufacturer part ID (pk) to update"`
+	Manufacturer int    `json:"manufacturer,omitempty" jsonschema:"New manufacturer company ID. The company must have is_manufacturer set."`
+	MPN          string `json:"MPN,omitempty" jsonschema:"New manufacturer part number, max 100 characters"`
+	Description  string `json:"description,omitempty" jsonschema:"New manufacturer description, max 250 characters"`
+	Link         string `json:"link,omitempty" jsonschema:"New manufacturer product page URL"`
+	Notes        string `json:"notes,omitempty" jsonschema:"New long-form notes"`
+}
+
+func RegisterUpdateManufacturerPart(server *mcp.Server, c *client.Client, r *coerce.Registry) {
+	coerce.AddTool(server, r, &mcp.Tool{
+		Name: "update_manufacturer_part",
+		Description: "Update an existing manufacturer part link. Only provided fields are changed. Changing the MPN here also " +
+			"changes the MPN reported by every supplier part linked to it, since that field is derived rather than stored twice.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input UpdateManufacturerPartInput) (*mcp.CallToolResult, any, error) {
+		if input.ID == 0 {
+			return errResult(fmt.Errorf("id is required")), nil, nil
+		}
+		payload := map[string]any{}
+		if input.Manufacturer != 0 {
+			payload["manufacturer"] = input.Manufacturer
+		}
+		if input.MPN != "" {
+			payload["MPN"] = input.MPN
+		}
+		if input.Description != "" {
+			payload["description"] = input.Description
+		}
+		if input.Link != "" {
+			payload["link"] = input.Link
+		}
+		if input.Notes != "" {
+			payload["notes"] = input.Notes
+		}
+		if len(payload) == 0 {
+			return errResult(fmt.Errorf("no fields to update")), nil, nil
+		}
+
+		var updated ManufacturerPart
+		path := fmt.Sprintf("/api/company/part/manufacturer/%d/", input.ID)
+		if err := c.Patch(path, payload, &updated); err != nil {
+			err = explainQuerysetError(err, "manufacturer", input.Manufacturer,
+				"only companies with is_manufacturer set can manufacture parts; call update_company with is_manufacturer=true first")
+			return errResult(fmt.Errorf("updating manufacturer part %d: %w", input.ID, err)), nil, nil
+		}
+		return jsonResult(updated)
+	})
+}
+
+// -- Delete Manufacturer Part --
+
+type DeleteManufacturerPartInput struct {
+	ID int `json:"id" jsonschema:"The manufacturer part ID (pk) to delete"`
+}
+
+func RegisterDeleteManufacturerPart(server *mcp.Server, c *client.Client, r *coerce.Registry) {
+	coerce.AddTool(server, r, &mcp.Tool{
+		Name: "delete_manufacturer_part",
+		Description: "Remove a manufacturer link from a part. This deletes the link, not the part or the company - but it also " +
+			"deletes every supplier part linked to it, so check get_supplier_parts before removing one that suppliers point at.",
+		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPtr(true)},
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input DeleteManufacturerPartInput) (*mcp.CallToolResult, any, error) {
+		if input.ID == 0 {
+			return errResult(fmt.Errorf("id is required")), nil, nil
+		}
+		if err := c.Delete(fmt.Sprintf("/api/company/part/manufacturer/%d/", input.ID)); err != nil {
+			return errResult(fmt.Errorf("deleting manufacturer part %d: %w", input.ID, err)), nil, nil
+		}
+		return textResult(fmt.Sprintf("Manufacturer part %d deleted successfully.", input.ID))
 	})
 }

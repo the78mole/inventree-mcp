@@ -35,12 +35,24 @@ func RegisterAll(server *mcp.Server, c *client.Client, imgClient *imagesearch.Cl
 
 	// Suppliers / Companies
 	RegisterSearchCompanies(server, c, r)
+	RegisterCreateCompany(server, c, r)
+	RegisterUpdateCompany(server, c, r)
 	RegisterGetSupplierParts(server, c, r)
 	RegisterCreateSupplierPart(server, c, r)
 	RegisterUpdateSupplierPart(server, c, r)
 	RegisterDeleteSupplierPart(server, c, r)
 	RegisterGetSupplierPriceBreaks(server, c, r)
 	RegisterSetSupplierPriceBreak(server, c, r)
+
+	// Manufacturers
+	RegisterGetManufacturerParts(server, c, r)
+	RegisterCreateManufacturerPart(server, c, r)
+	RegisterUpdateManufacturerPart(server, c, r)
+	RegisterDeleteManufacturerPart(server, c, r)
+
+	// Sale pricing
+	RegisterGetSalePriceBreaks(server, c, r)
+	RegisterSetSalePriceBreak(server, c, r)
 
 	// Stock
 	RegisterGetStock(server, c, r)

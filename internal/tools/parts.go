@@ -34,6 +34,7 @@ type Part struct {
 	Keywords     *string  `json:"keywords"`
 	Link         *string  `json:"link"`
 	Purchaseable bool     `json:"purchaseable"`
+	Salable      bool     `json:"salable"`
 	Assembly     bool     `json:"assembly"`
 	Component    bool     `json:"component"`
 	Trackable    bool     `json:"trackable"`
@@ -101,7 +102,8 @@ type CreatePartInput struct {
 	Keywords     string   `json:"keywords,omitempty" jsonschema:"Keywords for search"`
 	Units        string   `json:"units,omitempty" jsonschema:"Units of measure"`
 	MinimumStock int      `json:"minimum_stock,omitempty" jsonschema:"Minimum stock level"`
-	Purchaseable *bool    `json:"purchaseable,omitempty" jsonschema:"Whether the part can be purchased (default true)"`
+	Purchaseable *bool    `json:"purchaseable,omitempty" jsonschema:"Whether the part can be purchased (default true). Manufacturer parts and supplier parts can only be attached to purchaseable parts."`
+	Salable      *bool    `json:"salable,omitempty" jsonschema:"Whether the part can be sold (default false). Required before set_sale_price_break will accept the part."`
 	Component    *bool    `json:"component,omitempty" jsonschema:"Whether the part is a component (default true)"`
 	Assembly     *bool    `json:"assembly,omitempty" jsonschema:"Whether the part is an assembly"`
 	Trackable    *bool    `json:"trackable,omitempty" jsonschema:"Whether the part is trackable by serial number"`
@@ -142,6 +144,9 @@ func RegisterCreatePart(server *mcp.Server, c *client.Client, r *coerce.Registry
 		}
 		if input.Purchaseable != nil {
 			payload["purchaseable"] = *input.Purchaseable
+		}
+		if input.Salable != nil {
+			payload["salable"] = *input.Salable
 		}
 		if input.Component != nil {
 			payload["component"] = *input.Component
@@ -187,6 +192,12 @@ type UpdatePartInput struct {
 	Description  string    `json:"description,omitempty" jsonschema:"New description"`
 	Category     int       `json:"category,omitempty" jsonschema:"New category ID. 0 or omit to leave unchanged."`
 	Active       *bool     `json:"active,omitempty" jsonschema:"Whether the part is active"`
+	Purchaseable *bool     `json:"purchaseable,omitempty" jsonschema:"Whether the part can be purchased. Manufacturer parts and supplier parts can only be attached to purchaseable parts."`
+	Salable      *bool     `json:"salable,omitempty" jsonschema:"Whether the part can be sold. Required before set_sale_price_break will accept the part."`
+	Component    *bool     `json:"component,omitempty" jsonschema:"Whether the part is a component"`
+	Assembly     *bool     `json:"assembly,omitempty" jsonschema:"Whether the part is an assembly"`
+	Trackable    *bool     `json:"trackable,omitempty" jsonschema:"Whether the part is trackable by serial number"`
+	Virtual      *bool     `json:"virtual,omitempty" jsonschema:"Whether the part is virtual (not physical)"`
 	IPN          string    `json:"IPN,omitempty" jsonschema:"New Internal Part Number"`
 	Keywords     string    `json:"keywords,omitempty" jsonschema:"New keywords"`
 	Units        string    `json:"units,omitempty" jsonschema:"New units of measure"`
@@ -199,7 +210,7 @@ type UpdatePartInput struct {
 func RegisterUpdatePart(server *mcp.Server, c *client.Client, r *coerce.Registry) {
 	coerce.AddTool(server, r, &mcp.Tool{
 		Name:        "update_part",
-		Description: "Update an existing part's fields. Only provided fields are changed. Use this to rename parts, change categories, update descriptions, deactivate parts, or set tags. Note that 'tags' replaces the whole tag list rather than appending to it.",
+		Description: "Update an existing part's fields. Only provided fields are changed. Use this to rename parts, change categories, update descriptions, deactivate parts, set tags, or flip the salable/purchaseable/component/assembly/trackable/virtual flags. Note that 'tags' replaces the whole tag list rather than appending to it.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input UpdatePartInput) (*mcp.CallToolResult, any, error) {
 		payload := map[string]any{}
 		if input.Name != "" {
@@ -213,6 +224,24 @@ func RegisterUpdatePart(server *mcp.Server, c *client.Client, r *coerce.Registry
 		}
 		if input.Active != nil {
 			payload["active"] = *input.Active
+		}
+		if input.Purchaseable != nil {
+			payload["purchaseable"] = *input.Purchaseable
+		}
+		if input.Salable != nil {
+			payload["salable"] = *input.Salable
+		}
+		if input.Component != nil {
+			payload["component"] = *input.Component
+		}
+		if input.Assembly != nil {
+			payload["assembly"] = *input.Assembly
+		}
+		if input.Trackable != nil {
+			payload["trackable"] = *input.Trackable
+		}
+		if input.Virtual != nil {
+			payload["virtual"] = *input.Virtual
 		}
 		if input.IPN != "" {
 			payload["IPN"] = input.IPN
