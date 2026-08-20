@@ -1,56 +1,8 @@
 package tools
 
 import (
-	"strings"
 	"testing"
 )
-
-func strPtr(s string) *string { return &s }
-
-// TestRemoteImageWarning pins down when the silent remote_image no-op is
-// reported. This is the bug the upload_part_image fallback exists for: an
-// InvenTree host without outbound internet access returns HTTP 200 and
-// image: null, with no error anywhere in the response.
-func TestRemoteImageWarning(t *testing.T) {
-	tests := []struct {
-		name         string
-		requestedURL string
-		image        *string
-		wantWarning  bool
-	}{
-		{"no image requested", "", nil, false},
-		{"no image requested, part already has one", "", strPtr("/media/part_images/1.jpg"), false},
-		{"image requested and stored", "https://example.com/a.jpg", strPtr("/media/part_images/1.jpg"), false},
-		{"image requested, silently dropped", "https://example.com/a.jpg", nil, true},
-		{"image requested, empty string back", "https://example.com/a.jpg", strPtr(""), true},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := remoteImageWarning(tc.requestedURL, tc.image, 42)
-			if tc.wantWarning && got == "" {
-				t.Error("expected a warning, got none")
-			}
-			if !tc.wantWarning && got != "" {
-				t.Errorf("expected no warning, got %q", got)
-			}
-		})
-	}
-}
-
-func TestRemoteImageWarningNamesTheFallbackTool(t *testing.T) {
-	got := remoteImageWarning("https://example.com/a.jpg", nil, 42)
-	if got == "" {
-		t.Fatal("expected a warning")
-	}
-	// The reader is an agent deciding what to do next, so the message has to
-	// name the fallback tool and carry the arguments to call it with.
-	for _, want := range []string{"upload_part_image", "id=42", "https://example.com/a.jpg"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("warning does not mention %q: %s", want, got)
-		}
-	}
-}
 
 func TestImageFileName(t *testing.T) {
 	tests := []struct {

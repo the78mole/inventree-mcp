@@ -83,7 +83,7 @@ To enable the `search_part_images` tool, set these additional environment variab
 - `GOOGLE_API_KEY` — Google Cloud API key with Custom Search API enabled
 - `GOOGLE_CSE_ID` — Google Custom Search Engine ID (configured for image search)
 
-If not set, the server starts normally but `search_part_images` returns an informative error. The `set_part_image`, `create_part` (with `image_url`), and `update_part` (with `image_url`) tools work regardless — they only need a direct image URL.
+If not set, the server starts normally but `search_part_images` returns an informative error. The `set_part_image`, `upload_part_image`, `create_part` (with `image_url`), and `update_part` (with `image_url`) tools work regardless — they only need a direct image URL, which they fetch here and upload to InvenTree as file bytes. InvenTree 1.x has no server-side URL fetch (`remote_image` was removed), so the upload is the only mechanism.
 
 ## Workflow Guidelines
 

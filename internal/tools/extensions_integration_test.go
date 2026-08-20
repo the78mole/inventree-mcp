@@ -300,10 +300,9 @@ func TestGetSupplierPartsRequiresAFilter(t *testing.T) {
 
 // -- Image upload --
 
-// TestUploadPartImage covers the fallback path that exists because
-// remote_image silently no-ops on instances without outbound access. The
-// image is served by a local test server, so this does not depend on the
-// InvenTree host being able to reach anything.
+// TestUploadPartImage covers the only mechanism InvenTree 1.x has for setting
+// a part image: uploading the bytes. The image is served by a local test
+// server, so this does not depend on the InvenTree host reaching anything.
 func TestUploadPartImage(t *testing.T) {
 	ctx, cs, c := connectSession(t)
 	part := createTestPart(t, c, "_MCP_TEST_IMAGE_DELETE_ME")
@@ -325,6 +324,64 @@ func TestUploadPartImage(t *testing.T) {
 		t.Fatal("expected the part to have an image after upload")
 	}
 	t.Logf("uploaded image stored as %s", *updated.Image)
+}
+
+// set_part_image and the image_url option of create_part/update_part used to
+// write the removed remote_image field, which InvenTree accepted and dropped.
+// All three now go through the same upload, so all three must actually leave
+// an image behind.
+func TestImageURLPathsAllUpload(t *testing.T) {
+	ctx, cs, c := connectSession(t)
+
+	pngBytes := onePixelPNG(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(pngBytes)
+	}))
+	defer srv.Close()
+	imageURL := srv.URL + "/testimage.png"
+
+	t.Run("set_part_image", func(t *testing.T) {
+		part := createTestPart(t, c, "_MCP_TEST_SETIMAGE_DELETE_ME")
+		var updated tools.Part
+		decodeInto(t, callTool(t, ctx, cs, "set_part_image", map[string]any{
+			"id":        part.PK,
+			"image_url": imageURL,
+		}), &updated)
+		if updated.Image == nil || *updated.Image == "" {
+			t.Error("set_part_image reported success but the part has no image")
+		}
+	})
+
+	t.Run("create_part", func(t *testing.T) {
+		var created tools.Part
+		decodeInto(t, callTool(t, ctx, cs, "create_part", map[string]any{
+			"name":        "_MCP_TEST_CREATEIMAGE_DELETE_ME",
+			"description": "Integration test part - safe to delete",
+			"image_url":   imageURL,
+		}), &created)
+		t.Cleanup(func() {
+			_ = c.Patch(fmt.Sprintf("/api/part/%d/", created.PK), map[string]any{"active": false}, nil)
+			if err := c.Delete(fmt.Sprintf("/api/part/%d/", created.PK)); err != nil {
+				t.Errorf("cleanup - delete part %d: %v", created.PK, err)
+			}
+		})
+		if created.Image == nil || *created.Image == "" {
+			t.Error("create_part with image_url left the part without an image")
+		}
+	})
+
+	t.Run("update_part", func(t *testing.T) {
+		part := createTestPart(t, c, "_MCP_TEST_UPDATEIMAGE_DELETE_ME")
+		var updated tools.Part
+		decodeInto(t, callTool(t, ctx, cs, "update_part", map[string]any{
+			"id":        part.PK,
+			"image_url": imageURL,
+		}), &updated)
+		if updated.Image == nil || *updated.Image == "" {
+			t.Error("update_part with image_url left the part without an image")
+		}
+	})
 }
 
 func TestUploadPartImageRejectsNonImages(t *testing.T) {
