@@ -11,7 +11,7 @@ An [MCP](https://modelcontextprotocol.io/) (Model Context Protocol) server that 
 
 ## Features
 
-- **26 MCP tools** covering parts, stock, locations, and categories
+- **41 MCP tools** covering parts, parameters, suppliers, stock, locations, and categories
 - **Fuzzy search** — say "green box" and it finds "Green 1"
 - **Hierarchical navigation** — locations and categories with full path display
 - **Stock management** — add, remove, transfer, and track inventory
@@ -166,7 +166,8 @@ Restart Claude Desktop. You should see a hammer icon indicating MCP tools are av
 | `create_part` | Create a new part |
 | `update_part` | Update part fields (name, description, category, tags, etc.) |
 | `delete_part` | Delete a part (auto-deactivates first) |
-| `set_part_image` | Attach an image to a part via URL |
+| `set_part_image` | Attach an image to a part from a URL |
+| `upload_part_image` | Same thing under a name that says how it works |
 | `search_part_images` | Find product images via Google (requires API keys) |
 
 #### Part tags
@@ -191,6 +192,74 @@ Two InvenTree API quirks are worth knowing:
   substring of the other (`recommended`/`discouraged`, not
   `recommended`/`not-recommended`).
 
+#### Part images
+
+**InvenTree 1.x can only be given image *bytes*.** The `remote_image` field,
+which used to hand InvenTree a URL for the server to fetch itself, is gone —
+verified against 1.4.3 / API 511:
+
+- `OPTIONS /api/part/` offers `image` (file upload) and `existing_image`, no
+  `remote_image`;
+- the field does not appear in that version's part serializer at all;
+- `GET /api/settings/global/INVENTREE_DOWNLOAD_FROM_URL/` returns **404** — the
+  setting that used to gate the feature no longer exists.
+
+Django REST Framework ignores unknown keys silently, so writing `remote_image`
+returned HTTP 200 with `image: null` and no error anywhere. That is the silent
+no-op earlier versions of these tools tried to detect and report; there is
+nothing to detect any more, because there is no code path that could work.
+
+So `set_part_image`, `upload_part_image` and the `image_url` option of
+`create_part`/`update_part` all do the same thing: download the image in **this**
+process and PATCH the bytes to InvenTree as `multipart/form-data`. The machine
+running this MCP server needs outbound access to the image URL; the InvenTree
+host does not.
+
+`create_part` and `update_part` upload the image in a second request after the
+part itself is written. If the part is created but the image fails, the result
+carries the part plus an `image_error` field rather than failing the call.
+
+### Part Parameters
+
+Parameter templates define a technical attribute (name + units) globally;
+parameters are one template's value on one part. Note that these live under
+`/api/parameter/…`, not `/api/part/parameter/…`.
+
+| Tool | Description |
+|---|---|
+| `search_parameter_templates` | Find templates by name before creating a near-duplicate |
+| `list_parameter_templates` | List all parameter templates |
+| `create_parameter_template` | Create a template explicitly |
+| `get_part_parameters` | List a part's parameter values, with template details expanded |
+| `set_part_parameter` | Upsert a value — creates the template and/or the value as needed |
+| `delete_parameter` | Remove a value from a part (the template survives) |
+
+`set_part_parameter` is the one to reach for: given a `template_name` it looks
+the template up, creates it if missing, then updates or creates the part's
+value. Populating a part's attributes is one call per attribute with no
+existence checks in between.
+
+### Suppliers
+
+| Tool | Description |
+|---|---|
+| `search_companies` | Find companies, optionally filtered by supplier/manufacturer/customer role |
+| `get_supplier_parts` | List supplier links by part and/or supplier |
+| `create_supplier_part` | Link a part to a supplier under that supplier's SKU |
+| `update_supplier_part` | Update an existing supplier link |
+| `delete_supplier_part` | Remove a supplier link |
+| `get_supplier_price_breaks` | List a supplier part's quantity/price tiers |
+| `set_supplier_price_break` | Upsert the price at one quantity |
+
+Two traps worth knowing here:
+
+- **`part` on a price break means the SupplierPart pk**, not the Part pk. That
+  is InvenTree's own naming; these tools call it `supplier_part` to keep it
+  straight.
+- **`MPN` is read-only** on a supplier part (verified via `OPTIONS`) — it
+  mirrors the linked `manufacturer_part`. Writing it is accepted and changes
+  nothing, so set `manufacturer_part` instead.
+
 ### Stock
 
 | Tool | Description |
@@ -201,6 +270,7 @@ Two InvenTree API quirks are worth knowing:
 | `stock_add_quantity` | Add quantity to existing stock items |
 | `stock_remove_quantity` | Remove quantity from existing stock items |
 | `stock_transfer` | Move stock between locations |
+| `get_stock_history` | Read a stock item's tracking history (movements, counts, notes) |
 | `delete_stock_item` | Delete a stock entry |
 
 ### Stock Locations

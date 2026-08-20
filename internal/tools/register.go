@@ -22,7 +22,25 @@ func RegisterAll(server *mcp.Server, c *client.Client, imgClient *imagesearch.Cl
 	RegisterDeletePart(server, c, r)
 	RegisterListParts(server, c, r)
 	RegisterSetPartImage(server, c, r)
+	RegisterUploadPartImage(server, c, r)
 	RegisterSearchPartImages(server, imgClient, r)
+
+	// Part Parameters
+	RegisterSearchParameterTemplates(server, c, r)
+	RegisterListParameterTemplates(server, c, r)
+	RegisterCreateParameterTemplate(server, c, r)
+	RegisterGetPartParameters(server, c, r)
+	RegisterSetPartParameter(server, c, r)
+	RegisterDeleteParameter(server, c, r)
+
+	// Suppliers / Companies
+	RegisterSearchCompanies(server, c, r)
+	RegisterGetSupplierParts(server, c, r)
+	RegisterCreateSupplierPart(server, c, r)
+	RegisterUpdateSupplierPart(server, c, r)
+	RegisterDeleteSupplierPart(server, c, r)
+	RegisterGetSupplierPriceBreaks(server, c, r)
+	RegisterSetSupplierPriceBreak(server, c, r)
 
 	// Stock
 	RegisterGetStock(server, c, r)
@@ -31,6 +49,7 @@ func RegisterAll(server *mcp.Server, c *client.Client, imgClient *imagesearch.Cl
 	RegisterStockAdd(server, c, r)
 	RegisterStockRemove(server, c, r)
 	RegisterStockTransfer(server, c, r)
+	RegisterGetStockHistory(server, c, r)
 	RegisterDeleteStockItem(server, c, r)
 
 	// Locations
