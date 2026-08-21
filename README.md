@@ -11,7 +11,7 @@ An [MCP](https://modelcontextprotocol.io/) (Model Context Protocol) server that 
 
 ## Features
 
-- **41 MCP tools** covering parts, parameters, suppliers, stock, locations, and categories
+- **49 MCP tools** covering parts, parameters, suppliers, manufacturers, pricing, stock, locations, and categories
 - **Fuzzy search** — say "green box" and it finds "Green 1"
 - **Hierarchical navigation** — locations and categories with full path display
 - **Stock management** — add, remove, transfer, and track inventory
@@ -170,6 +170,18 @@ Restart Claude Desktop. You should see a hammer icon indicating MCP tools are av
 | `upload_part_image` | Same thing under a name that says how it works |
 | `search_part_images` | Find product images via Google (requires API keys) |
 
+#### Part flags
+
+`create_part` and `update_part` expose InvenTree's role flags — `purchaseable`,
+`salable`, `component`, `assembly`, `trackable`, `virtual` and (on update)
+`active`. They are not cosmetic: several endpoints filter their `part` field to
+one of these flags and report a part outside that filter as one that does not
+exist — on reads as well as writes.
+
+- `salable` (**off** by default) gates `set_sale_price_break`.
+- `purchaseable` (on by default) gates `create_supplier_part` and
+  `create_manufacturer_part`.
+
 #### Part tags
 
 `create_part` and `update_part` accept a `tags` list, which maps to InvenTree's
@@ -244,6 +256,8 @@ existence checks in between.
 | Tool | Description |
 |---|---|
 | `search_companies` | Find companies, optionally filtered by supplier/manufacturer/customer role |
+| `create_company` | Create a supplier, manufacturer and/or customer |
+| `update_company` | Update a company, e.g. to add a role flag to an existing one |
 | `get_supplier_parts` | List supplier links by part and/or supplier |
 | `create_supplier_part` | Link a part to a supplier under that supplier's SKU |
 | `update_supplier_part` | Update an existing supplier link |
@@ -259,6 +273,50 @@ Two traps worth knowing here:
 - **`MPN` is read-only** on a supplier part (verified via `OPTIONS`) — it
   mirrors the linked `manufacturer_part`. Writing it is accepted and changes
   nothing, so set `manufacturer_part` instead.
+- **The part has to be `purchaseable` and the company has to be a supplier.**
+  InvenTree filters both fields to those querysets and reports anything outside
+  them as missing rather than as wrongly flagged — and it does so on reads as
+  well as writes, in two different wordings:
+
+  ```
+  POST      {"part": ["Invalid pk \"239\" - object does not exist."]}
+  GET ?part= {"part": ["Select a valid choice. That choice is not one of the available choices."]}
+  ```
+
+  The second one means `get_supplier_parts(part=239)` fails outright for a part
+  that is merely not purchaseable. These tools add a note saying which flag is
+  missing; `update_part` and `update_company` can set them.
+
+### Manufacturers
+
+| Tool | Description |
+|---|---|
+| `get_manufacturer_parts` | List manufacturer links by part, manufacturer and/or MPN |
+| `create_manufacturer_part` | Record who makes a part, under that manufacturer's MPN |
+| `update_manufacturer_part` | Update an existing manufacturer link |
+| `delete_manufacturer_part` | Remove a manufacturer link |
+
+A manufacturer part is what carries the MPN: a supplier part derives its MPN
+from the `manufacturer_part` it points at, so the usual order is create the
+company (`create_company` with `is_manufacturer`), create the manufacturer part,
+then pass its ID to `create_supplier_part`.
+
+Deleting a manufacturer part deletes every supplier part linked to it — check
+`get_supplier_parts` first.
+
+### Sale Pricing
+
+| Tool | Description |
+|---|---|
+| `get_sale_price_breaks` | List a part's quantity/price tiers for selling |
+| `set_sale_price_break` | Upsert the sale price at one quantity |
+
+Selling prices hang off the part, buying prices off the supplier part — hence
+`get_sale_price_breaks(part=…)` next to `get_supplier_price_breaks(supplier_part=…)`.
+The part must be marked `salable`, which new parts are not by default. Otherwise
+the same filtered-queryset errors as above show up — including on
+`get_sale_price_breaks`, which cannot even read the (empty) price list of a
+non-salable part — and `update_part` with `salable=true` is the fix.
 
 ### Stock
 
